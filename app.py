@@ -1,17 +1,38 @@
+"""
+    Converts a youtube playlist into a spotify playlist
+"""
+
+# Python libraries
 import os
 from sys import argv
+from typing import Any, Union
 import re
+
+# Google SDK
 import googleapiclient.errors
 import googleapiclient.discovery
 import google_auth_oauthlib.flow
+
+# Spotify Third-party library
 from spotipy.oauth2 import SpotifyOAuth
 import spotipy
 
+# Other Third-party libraries
 from dotenv import load_dotenv
 load_dotenv()  # take environment variables from .env.
 
 
-def clean_up_song_names(song: str):
+def clean_up_song_names(song: str) -> str:
+    """
+    Removes youtube specify keywords for a given song name
+
+        Parameters:
+            song (str): Youtube video song title
+
+        Returns:
+            song (str): mutated song name with extracted youtube video song
+            title keywords and characters
+    """
     subs = [
         r"\(.+\)", r"\[.+\]",
         r"(ft\.|Feat\.)[0-9A-za-z, ]*",
@@ -28,59 +49,54 @@ def clean_up_song_names(song: str):
     return song
 
 
-playlist_name = ''
-public_playlist = False
-playlist_description = ''
-song_names = []
+def google_auth() -> Any:
+    """
+    Returns object that can interface with google's API (youtube in this case)
 
-yt_playlist_id = ''
-yt_scopes = ["https://www.googleapis.com/auth/youtube.readonly"]
+        Parameters:
+            yt_playlist_id (str): This is the public playlist id fo
 
-sp = None
-current_user = None
+        Returns:
+            youtube (Any) : Google API instnace that allows for access to a user's
+            youtube data.
+    """
+    try:
+        # Youtube stuff
+        # Disable OAuthlib's HTTPS verification when running locally.
+        # *DO NOT* leave this option enabled in production.
+        os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
-try:
-    # Spotify commandline arguments
-    playlist_name, public_playlist, playlist_description = argv[1], argv[2], argv[3]
+        api_service_name = "youtube"
+        api_version = "v3"
+        client_secret_file = "client_secret.json"
+        yt_scopes = ["https://www.googleapis.com/auth/youtube.readonly"]
 
-    # Test songs
-    song_names = [
-        'The Weend - Die for you',
-        'Doja Cat - Kiss me More',
-        'Kanye West - Slow Jamz',
-    ]
+        # Get credentials and create an API client
+        flow = google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file(
+            client_secret_file, yt_scopes)
+        credentials = flow.run_console()
 
-    # Youtube commmandline arguments
-    yt_playlist_id = argv[4]
-except Exception as e:
-    print("Commandline Arguments were not set!")
-    print(f"Error: {e}")
+        youtube = googleapiclient.discovery.build(
+            api_service_name, api_version, credentials)
 
-
-# -*- coding: utf-8 -*-
-
-# Sample Python code for youtube.playlistItems.list
-# See instructions for running these code samples locally:
-# https://developers.google.com/explorer-help/guides/code_samples#python
+        return youtube
+    except Exception as exception:
+        print("An error occured when trying to access youtube")
+        print(f"Error: {exception}")
 
 
-try:
-    # Youtube stuff
-    # Disable OAuthlib's HTTPS verification when running locally.
-    # *DO NOT* leave this option enabled in production.
-    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+def yt_retrieve_playlist_items(yt_playlist_id: str, youtube) -> list[str]:
+    """
+    Returns a list containing all the songs present in a youtube playlist
 
-    api_service_name = "youtube"
-    api_version = "v3"
-    client_secrets_file = "client_secret.json"
+        Parameters:
+            yt_playlist_id (str): Youtube playlist public id
+            youtube: Google API youtube isntance
 
-    # Get credentials and create an API client
-    flow = google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file(
-        client_secrets_file, yt_scopes)
-    credentials = flow.run_console()
-    youtube = googleapiclient.discovery.build(
-        api_service_name, api_version, credentials=credentials)
-
+        Returns:
+            song_names (list[str]): List of song items present in youtube
+            playlist
+    """
     request = youtube.playlistItems().list(
         part="snippet",
         maxResults=100,
@@ -90,40 +106,94 @@ try:
 
     song_names = [clean_up_song_names(
         item["snippet"]["title"]) for item in response["items"]]
-except Exception as e:
-    print("An error occured when trying to access youtube")
-    print(f"Error: {e}")
 
-try:
-    # User Spotify Authentication
-    SCOPE = "playlist-modify-public"
-    sp = spotipy.Spotify(auth_manager=SpotifyOAuth(scope=SCOPE))
-    current_user = sp.current_user()
-except Exception as e:
-    print("An error occured when trying to authenticate user on spotify")
-    print(f"Error: {e}")
+    return song_names
 
-try:
-    # Creating and adding songs to spotify playlist
-    result = sp.user_playlist_create(current_user['id'], playlist_name,
-                                     public_playlist, False, playlist_description)
-    playlist_id = result['id']
-    song_ids = []
-    for song in song_names:
-        try:
-            print(f"Adding - {song}")
-            song_info = sp.search(song, type='track')
-            song_ids.append(song_info['tracks']['items'][0]['id'])
-        except Exception as e:
-            print(f"{song} was not added")
-            print(f"Error: {e}")
-            print("")
 
-    # song_ids = [sp.search(song, type='track')['tracks']
-    # ['items'][0]['id'] for song in song_names]
+def spotify_auth() -> Any:
+    """
+    Authenticates a user and returns a Spotipy instance to access user playlist
+    permission controls
 
-    print(f"Adding all songs to Spotify Playlist {playlist_name}")
-    add_playlist_songs_result = sp.playlist_add_items(playlist_id, song_ids)
-except Exception as e:
-    print("An error occured while trying to create new user playlist")
-    print(f"Error: {e}")
+        Returns:
+            spotipy_instance (Any): Spotipy instance
+    """
+    try:
+        scope = "playlist-modify-public"
+        spotipy_instance = spotipy.Spotify(auth_manager=SpotifyOAuth(scope))
+
+        return spotipy_instance
+    except Exception as exception:
+        print("An error occured when trying to authenticate user on spotify")
+        print(f"Error: {exception}")
+
+
+def create_spotify_playlist(
+    spotipy_instance: spotipy.Spotify,
+    playlist_name: str,
+    public_playlist: bool,
+    playlist_description: str,
+    song_names: list[str]
+) -> None:
+    """
+    Creates spotify playlist based
+    """
+    try:
+        # Creating and adding songs to spotify playlist
+        current_user: Any = spotipy_instance.current_user()
+        result: Any = spotipy_instance.user_playlist_create(current_user['id'],
+                                                            playlist_name,
+                                                            public_playlist,
+                                                            False,
+                                                            playlist_description)
+
+        playlist_id: str = result['id']
+        song_ids = []
+        for song in song_names:
+            try:
+                print(f"Adding - {song}")
+                song_info: Any = spotipy_instance.search(song, type='track')
+                song_ids.append(song_info['tracks']['items'][0]['id'])
+            except Exception as exception:
+                print(f"{song} was not added")
+                print(f"Error: {exception}")
+
+        print(f"Adding all songs to Spotify Playlist {playlist_name}")
+        spotipy_instance.playlist_add_items(playlist_id, song_ids)
+    except Exception as exception:
+        print("An error occured while trying to create new user playlist")
+        print(f"Error: {exception}")
+
+
+def main():
+    """Scrpt main function"""
+    playlist_name: Union[str, None] = None
+    public_playlist: bool = True
+    playlist_description: Union[str, None] = None
+    yt_playlist_id: Union[str, None] = None
+
+    try:
+        # Spotify commandline arguments
+        playlist_name = argv[1]
+        public_playlist = bool(argv[2])
+        playlist_description = argv[3]
+
+        # Youtube commmandline arguments
+        yt_playlist_id = argv[4]
+    except Exception as exception:
+        print("Commandline Arguments were not set!")
+        print(f"Error: {exception}")
+
+    if None not in [playlist_name, playlist_description, yt_playlist_id]:
+        youtube: Any = google_auth()
+        spotify: Any = spotify_auth()
+
+        # retrieve youtube playlist song items
+        if yt_playlist_id is not None:
+            youtube_playlist_songs = yt_retrieve_playlist_items(
+                yt_playlist_id, youtube)
+        # create spotify playlist using youtube playlist song items
+
+
+if __name__ == "__main__":
+    main()
